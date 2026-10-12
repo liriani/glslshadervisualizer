@@ -1,0 +1,772 @@
+import React, { useState, useEffect, useRef } from 'react';
+import * as THREE from 'three';
+import {
+  Play,
+  Code,
+  Settings,
+  BookOpen,
+  Download,
+  Layers,
+  Maximize2,
+  Monitor,
+  Copy,
+  CheckCircle2
+} from 'lucide-react';
+
+const SHADER_TEMPLATES = [
+  {
+    id: 'plasma',
+    name: 'Organic Plasma',
+    description: 'A classic noise-based plasma effect often used for background textures.',
+    code: `// TouchDesigner compatible GLSL
+// Use a GLSL TOP to run this.
+uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uRes.xy;
+    float t = uTime * 0.5;
+
+    vec3 col = 0.5 + 0.5 * cos(t + uv.xyx + vec3(0, 2, 4));
+
+    float noise = sin(uv.x * 10.0 + t) * sin(uv.y * 10.0 - t);
+    col *= 0.8 + 0.2 * noise;
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'grid',
+    name: 'Cyber Grid',
+    description: 'A perspective grid useful for VJ loops and UI backgrounds.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+
+    // Simple 3D projection
+    float z = 1.0 / (uv.y + 0.5);
+    vec2 p = vec2(uv.x * z, z + uTime);
+
+    float grid = smoothstep(0.02, 0.0, abs(sin(p.x * 10.0)) * 0.1);
+    grid += smoothstep(0.02, 0.0, abs(sin(p.y * 10.0)) * 0.1);
+
+    vec3 color = vec3(0.0, 0.8, 1.0) * grid * (1.0 / z);
+    fragColor = vec4(color, 1.0);
+}`
+  },
+  {
+    id: 'gradient',
+    name: 'Soft Gradient Mesh',
+    description: 'Smooth animated color transitions.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uRes.xy;
+
+    vec3 colorA = vec3(0.1, 0.2, 0.5);
+    vec3 colorB = vec3(0.9, 0.4, 0.3);
+
+    float mask = sin(uv.x * 3.0 + uTime) * 0.5 + 0.5;
+    mask *= cos(uv.y * 2.0 - uTime * 0.8) * 0.5 + 0.5;
+
+    vec3 finalColor = mix(colorA, colorB, mask + uv.x * 0.5);
+
+    fragColor = vec4(finalColor, 1.0);
+}`
+  },
+  {
+    id: 'kaleidoscope',
+    name: 'Trippy Kaleidoscope',
+    description: 'Polar coordinates and symmetry to create infinite mirrors.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+
+    // Convert to polar coordinates
+    float angle = atan(uv.y, uv.x);
+    float radius = length(uv);
+
+    // Kaleido effect parameters
+    float segments = 6.0;
+
+    // Mirror the angles
+    angle = mod(angle, 6.28318 / segments);
+    angle = abs(angle - 3.14159 / segments);
+
+    // Convert back to cartesian
+    vec2 kUv = radius * vec2(cos(angle), sin(angle));
+
+    // Add movement to the texture coordinates
+    kUv += vec2(sin(uTime * 0.5), cos(uTime * 0.5)) * 0.5;
+
+    // Generate color pattern
+    vec3 col = 0.5 + 0.5 * cos(uTime + kUv.xyx * 5.0 + vec3(0, 2, 4));
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'particles',
+    name: 'Starfield Particles',
+    description: 'Hash-based noise to create a multi-layered parallax starfield.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+// Pseudo-random number generator
+float Hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+    uv *= 5.0; // Scale space
+
+    vec3 col = vec3(0);
+
+    // Layer starfields for depth
+    for(int j = 0; j < 4; j++) {
+        float fj = float(j) * 0.25;
+        vec2 fuv = fract(uv) - 0.5;
+        vec2 id = floor(uv);
+
+        float n = Hash21(id); // random 0-1 per grid cell
+
+        float size = fract(n * 345.32);
+        float star = smoothstep(size * 0.1, 0.0, length(fuv - vec2(n - 0.5, fract(n * 34.) - 0.5)));
+
+        vec3 starCol = sin(vec3(0.2, 0.8, 0.9) * fract(n * 2345.2) * 124.4) * 0.5 + 0.5;
+        starCol = starCol * vec3(1.0, 0.5, 1.0); // Tint purple/blue
+
+        col += star * size * starCol;
+
+        // Prepare next layer
+        uv *= 1.5;
+        uv.x += uTime * (0.2 + fj); // Parallax motion
+    }
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'waves',
+    name: 'Interference Waves',
+    description: 'Overlapping sine waves creating abstract topography.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uRes.xy;
+    vec3 col = vec3(0.0);
+
+    // Draw multiple overlapping lines
+    for(int i = 1; i < 6; i++) {
+        float fi = float(i);
+        vec2 uv2 = gl_FragCoord.xy / uRes.xy;
+
+        // Complex wave math
+        uv2.y += sin(uv2.x * (10.0 - fi) + uTime * fi * 0.5) * 0.1;
+        uv2.y += cos(uv2.x * 4.0 - uTime) * 0.05;
+
+        float line = smoothstep(0.015, 0.0, abs(uv2.y - 0.15 * fi));
+
+        // Additive color blending
+        col += vec3(0.1 * fi, 0.2 + 0.1 * fi, 1.0) * line;
+    }
+
+    // Add a slight glow
+    col += uv.y * 0.2 * vec3(0.0, 0.5, 0.8);
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'voronoi',
+    name: 'Cellular Voronoi',
+    description: 'Distance fields to points, creating biological cell-like structures.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+// Random 2D to 2D
+vec2 random2(vec2 p) {
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uRes.xx;
+    uv *= 6.0; // Zoom out
+
+    vec2 i_uv = floor(uv);
+    vec2 f_uv = fract(uv);
+
+    float m_dist = 1.0; // minimum distance
+    vec2 m_point;       // minimum point
+
+    // Check neighboring grid cells
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            vec2 neighbor = vec2(float(x), float(y));
+            vec2 point = random2(i_uv + neighbor);
+
+            // Animate point
+            point = 0.5 + 0.5 * sin(uTime + 6.2831 * point);
+
+            vec2 diff = neighbor + point - f_uv;
+            float dist = length(diff);
+
+            if(dist < m_dist) {
+                m_dist = dist;
+                m_point = point;
+            }
+        }
+    }
+
+    // Color based on distance and point data
+    vec3 col = vec3(m_dist);
+    col *= 0.8 + 0.2 * sin(m_point.x * 50.0 + uTime * 2.0); // Add ridges
+    col *= vec3(0.2, 0.8, 0.6); // Tint cyan/green
+
+    // Draw cell centers
+    col += 1.0 - step(0.02, m_dist);
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'raymarching',
+    name: 'Raymarched Sphere',
+    description: 'Basic 3D engine inside a fragment shader using Signed Distance Fields (SDF).',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+// Signed Distance Field for a sphere
+float sdSphere(vec3 p, float s) {
+    return length(p) - s;
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+
+    vec3 ro = vec3(0.0, 0.0, -3.0); // Ray origin (camera)
+    vec3 rd = normalize(vec3(uv, 1.0)); // Ray direction
+
+    float d0 = 0.0; // Total distance marched
+
+    // Raymarching loop
+    for(int i = 0; i < 80; i++) {
+        vec3 p = ro + rd * d0;
+
+        // Distort space for organic movement
+        p.y += sin(uTime * 2.0 + p.x) * 0.3;
+        p.x += cos(uTime + p.y) * 0.2;
+
+        float ds = sdSphere(p, 1.0); // Distance to scene
+        d0 += ds;
+        if(d0 > 100.0 || ds < 0.001) break; // Missed or hit
+    }
+
+    vec3 col = vec3(0.0); // Background
+
+    if(d0 < 100.0) { // Hit
+        vec3 p = ro + rd * d0;
+        vec3 n = normalize(p); // Rough normal
+        vec3 light = normalize(vec3(sin(uTime), 1.0, cos(uTime)));
+
+        float dif = clamp(dot(n, light), 0.0, 1.0); // Diffuse lighting
+        float ambient = 0.2;
+
+        col = vec3(0.8, 0.2, 0.4) * dif + ambient;
+    }
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'fractal',
+    name: 'Pulsing Julia Set',
+    description: 'A mathematical fractal loop that animates infinitely.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+    uv *= 2.5; // Zoom out
+
+    // Animate the 'c' constant over time
+    vec2 c = vec2(sin(uTime * 0.4) * 0.8, cos(uTime * 0.25) * 0.8);
+    vec2 z = uv;
+
+    int iter = 0;
+    int max_iter = 100;
+
+    // Fractal formula: z = z^2 + c
+    for(int i = 0; i < 100; i++) {
+        if(length(z) > 4.0) break;
+
+        float xtemp = z.x * z.x - z.y * z.y;
+        z.y = 2.0 * z.x * z.y + c.y;
+        z.x = xtemp + c.x;
+
+        iter++;
+    }
+
+    // Smooth coloring
+    float f = float(iter) / float(max_iter);
+
+    // Map iterations to a color gradient
+    vec3 col = vec3(f * 2.0, f * 0.5, f * 3.0);
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'crt',
+    name: 'CRT Glitch & Aberration',
+    description: 'Screen distortion, scanlines, and RGB splitting.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+// Noise function
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uRes.xy;
+
+    // Curve the screen edges (CRT effect)
+    vec2 crtUv = uv * 2.0 - 1.0;
+    crtUv *= 1.05 - 0.05 * cos(crtUv.yx * 1.57);
+    crtUv = (crtUv + 1.0) * 0.5;
+
+    // Animated Scanlines
+    float scanline = sin(uv.y * 800.0 + uTime * 10.0) * 0.04;
+
+    // Chromatic aberration (RGB split)
+    float splitAmount = 0.01 * sin(uTime * 2.0);
+    vec2 uvR = crtUv + vec2(splitAmount, 0.0);
+    vec2 uvG = crtUv;
+    vec2 uvB = crtUv - vec2(splitAmount, 0.0);
+
+    // Generate static/noise pattern for each channel
+    float r = hash(uvR + uTime * 0.1);
+    float g = hash(uvG + uTime * 0.15);
+    float b = hash(uvB + uTime * 0.2);
+
+    // Vignette
+    float vig = uv.x * uv.y * (1.0 - uv.x) * (1.0 - uv.y);
+    vig = pow(16.0 * vig, 0.25);
+
+    // Combine everything
+    vec3 col = vec3(r, g, b) * vig - scanline;
+
+    // Black out out-of-bounds UVs
+    if(crtUv.x < 0.0 || crtUv.x > 1.0 || crtUv.y < 0.0 || crtUv.y > 1.0) {
+        col = vec3(0.0);
+    }
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'spiral',
+    name: 'Hypnotic Spiral',
+    description: 'Math-driven spiral using trigonometric functions.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+
+    float angle = atan(uv.y, uv.x);
+    float radius = length(uv);
+
+    // Spiral formula
+    float spiral = sin(radius * 30.0 - uTime * 8.0 + angle * 5.0);
+
+    // Sharpen the edges
+    spiral = smoothstep(0.0, 0.1, spiral) - smoothstep(0.4, 0.5, spiral);
+
+    // Background and foreground colors
+    vec3 bg = vec3(0.05, 0.0, 0.1);
+    vec3 fg = vec3(0.9, 0.2, 0.5) * (1.0 - radius); // Fade out from center
+
+    vec3 col = mix(bg, fg, spiral);
+
+    fragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    id: 'domain_warp',
+    name: 'Liquid Domain Warping',
+    description: 'Fractional Brownian Motion (FBM) used to distort itself iteratively.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i + vec2(0.,0.)), hash(i + vec2(1.,0.)), u.x),
+               mix(hash(i + vec2(0.,1.)), hash(i + vec2(1.,1.)), u.x), u.y);
+}
+
+// Fractional Brownian Motion
+float fbm(vec2 x) {
+    float v = 0.0, a = 0.5; vec2 shift = vec2(100.0);
+    mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.5));
+    for (int i = 0; i < 5; ++i) {
+        v += a * noise(x); x = rot * x * 2.0 + shift; a *= 0.5;
+    }
+    return v;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uRes.xy * 3.0;
+
+    // Pattern 1
+    vec2 q = vec2(0.0);
+    q.x = fbm(uv + 0.0 * uTime);
+    q.y = fbm(uv + vec2(1.0));
+
+    // Pattern 2 (warped by Pattern 1)
+    vec2 r = vec2(0.0);
+    r.x = fbm(uv + 1.0 * q + vec2(1.7, 9.2) + 0.15 * uTime);
+    r.y = fbm(uv + 1.0 * q + vec2(8.3, 2.8) + 0.126 * uTime);
+
+    // Final noise
+    float f = fbm(uv + r);
+
+    vec3 col = mix(vec3(0.1, 0.1, 0.2), vec3(0.2, 0.5, 0.6), clamp((f*f)*4.0, 0.0, 1.0));
+    col = mix(col, vec3(0.9, 0.9, 1.0), clamp(length(q), 0.0, 1.0));
+    col = mix(col, vec3(0.6, 0.1, 0.2), clamp(length(r.x), 0.0, 1.0));
+
+    fragColor = vec4((f * f * f + 0.6 * f * f + 0.5 * f) * col, 1.0);
+}`
+  },
+  {
+    id: 'hexagons',
+    name: 'Neon Hexagons',
+    description: 'Mathematical hexagonal tiling with individual IDs for random colorization.',
+    code: `uniform float uTime;
+uniform vec2 uRes;
+
+out vec4 fragColor;
+
+// Distance inside a hexagon
+float hexDist(vec2 p) {
+    p = abs(p);
+    float c = dot(p, normalize(vec2(1.0, 1.73205)));
+    return max(c, p.x);
+}
+
+// Calculate Hexagon coordinates and IDs
+vec4 hexCoords(vec2 uv) {
+    vec2 r = vec2(1.0, 1.73205);
+    vec2 h = r * 0.5;
+    vec2 a = mod(uv, r) - h;
+    vec2 b = mod(uv - h, r) - h;
+    vec2 gv = dot(a, a) < dot(b, b) ? a : b; // Grid UV
+    vec2 id = uv - gv;                      // Hex ID
+    return vec4(gv.x, gv.y, id.x, id.y);
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+    uv *= 10.0; // Zoom out
+
+    // Animate the grid
+    vec4 hc = hexCoords(uv + vec2(uTime * 2.0, uTime));
+
+    // Draw hex boundaries
+    float c = smoothstep(0.05, 0.1, hexDist(hc.xy));
+
+    // Random color per hexagon using its ID
+    float rand = fract(sin(dot(hc.zw, vec2(12.34, 56.78))) * 4321.0);
+
+    // Flash based on time
+    rand *= sin(uTime * 5.0 + rand * 10.0) * 0.5 + 0.5;
+
+    vec3 col = vec3(0.1, 0.8, 0.9) * rand * (1.0 - c);
+
+    fragColor = vec4(col, 1.0);
+}`
+  }
+];
+
+const App = () => {
+  const [activeShader, setActiveShader] = useState(SHADER_TEMPLATES[0]);
+  const [shaderCode, setShaderCode] = useState(SHADER_TEMPLATES[0].code);
+  const [error, setError] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const containerRef = useRef(null);
+  const rendererRef = useRef(null);
+  const uniformsRef = useRef({
+    uTime: { value: 0 },
+    uRes: { value: new THREE.Vector2() }
+  });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    // Scene Setup
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    rendererRef.current = renderer;
+
+    const updateSize = () => {
+      const width = containerRef.current.clientWidth;
+      const height = containerRef.current.clientHeight;
+      renderer.setSize(width, height);
+      uniformsRef.current.uRes.value.set(width, height);
+    };
+
+    containerRef.current.appendChild(renderer.domElement);
+    updateSize();
+
+    // Geometry
+    const geometry = new THREE.PlaneGeometry(2, 2);
+    let material;
+
+    try {
+      material = new THREE.ShaderMaterial({
+        uniforms: uniformsRef.current,
+        vertexShader: `
+          void main() {
+            gl_Position = vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: shaderCode.replace('out vec4 fragColor;', '').replace('fragColor =', 'gl_FragColor ='),
+      });
+    } catch (e) {
+      setError(e.message);
+    }
+
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+
+    let animationFrame;
+    const animate = (time) => {
+      uniformsRef.current.uTime.value = time / 1000;
+      renderer.render(scene, camera);
+      animationFrame = requestAnimationFrame(animate);
+    };
+    animate();
+
+    const handleResize = () => updateSize();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(animationFrame);
+      if (containerRef.current && renderer.domElement) {
+        containerRef.current.removeChild(renderer.domElement);
+      }
+      geometry.dispose();
+      if (material) material.dispose();
+    };
+  }, [shaderCode]);
+
+  const handleCopy = () => {
+    document.execCommand('copy');
+    const tempInput = document.createElement('textarea');
+    tempInput.value = shaderCode;
+    document.body.appendChild(tempInput);
+    tempInput.select();
+    document.execCommand('copy');
+    document.body.removeChild(tempInput);
+
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const selectTemplate = (template) => {
+    setActiveShader(template);
+    setShaderCode(template.code);
+    setError(null);
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-[#0a0a0a] text-slate-200 font-sans">
+      {/* Header */}
+      <header className="h-16 border-b border-white/10 flex items-center justify-between px-6 bg-[#0f0f0f]">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.4)]">
+            <Layers size={18} className="text-black" />
+          </div>
+          <div>
+            <h1 className="font-bold tracking-tight text-lg">GLSL Visualizer <span className="text-emerald-500 text-xs font-mono ml-2 px-1.5 py-0.5 border border-emerald-500/30 rounded">TD Ready</span></h1>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 transition-colors rounded-md text-sm font-medium text-white shadow-lg"
+          >
+            {copied ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+            {copied ? 'Copied!' : 'Copy Code for TOP'}
+          </button>
+        </div>
+      </header>
+
+      <main className="flex-1 flex overflow-hidden">
+        {/* Sidebar */}
+        <aside className="w-80 border-r border-white/10 bg-[#0f0f0f] flex flex-col z-10">
+          <div className="p-4 border-b border-white/5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500 bg-[#0f0f0f]">
+            <BookOpen size={14} />
+            Library ({SHADER_TEMPLATES.length})
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
+            {SHADER_TEMPLATES.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => selectTemplate(t)}
+                className={`w-full text-left p-4 rounded-xl transition-all border ${
+                  activeShader.id === t.id
+                    ? 'bg-emerald-500/10 border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.05)]'
+                    : 'bg-white/5 border-transparent hover:bg-white/10'
+                }`}
+              >
+                <div className={`font-semibold mb-1 ${activeShader.id === t.id ? 'text-emerald-400' : 'text-slate-200'}`}>
+                  {t.name}
+                </div>
+                <div className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                  {t.description}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div className="p-4 bg-emerald-500/5 border-t border-emerald-500/20">
+            <div className="text-[10px] uppercase font-bold text-emerald-500 mb-2">Pro Tip</div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              In TouchDesigner, replace <code className="text-emerald-400">uTime</code> with <code className="text-white">absTime.seconds</code> for continuous loopless animation.
+            </p>
+          </div>
+        </aside>
+
+        {/* Workspace */}
+        <div className="flex-1 flex flex-col md:flex-row">
+          {/* Editor Section */}
+          <div className="flex-1 flex flex-col border-r border-white/10 max-w-[50%]">
+            <div className="h-10 px-4 flex items-center justify-between bg-black/40 border-b border-white/5">
+              <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+                <Code size={14} /> glsl_shader.frag
+              </div>
+            </div>
+            <textarea
+              value={shaderCode}
+              onChange={(e) => setShaderCode(e.target.value)}
+              spellCheck="false"
+              className="flex-1 w-full bg-transparent p-6 font-mono text-sm resize-none focus:outline-none text-emerald-100/90 leading-6 selection:bg-emerald-500/30 custom-scrollbar"
+            />
+          </div>
+
+          {/* Preview Section */}
+          <div className="flex-1 flex flex-col bg-black">
+             <div className="h-10 px-4 flex items-center justify-between bg-black/40 border-b border-white/5">
+              <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+                <Play size={14} /> Live Preview
+              </div>
+              <div className="flex items-center gap-3">
+                <Monitor size={14} className="text-slate-500" />
+                <span className="text-[10px] text-slate-500 font-mono">Simulated Environment</span>
+              </div>
+            </div>
+
+            <div ref={containerRef} className="flex-1 relative overflow-hidden group">
+              {error && (
+                <div className="absolute inset-x-0 top-0 p-4 bg-red-500/20 backdrop-blur-md border-b border-red-500/40 text-red-400 text-xs font-mono z-10 whitespace-pre-wrap">
+                  {error}
+                </div>
+              )}
+              <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button className="p-2 bg-black/50 hover:bg-black/80 rounded-full text-slate-400 border border-white/10">
+                  <Maximize2 size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Control Panel */}
+            <div className="h-24 bg-[#0f0f0f] border-t border-white/10 p-4 flex items-center gap-6">
+              <div className="flex-1">
+                <div className="flex justify-between text-[10px] text-slate-500 mb-2 uppercase font-bold tracking-widest">
+                  <span>Uniform: uTime</span>
+                  <span className="text-emerald-500 font-mono">{uniformsRef.current.uTime.value.toFixed(2)}s</span>
+                </div>
+                <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 transition-all duration-75"
+                    style={{ width: `${(uniformsRef.current.uTime.value % 10) * 10}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button className="w-10 h-10 rounded-lg border border-white/10 flex items-center justify-center hover:bg-white/5 transition-colors">
+                  <Settings size={18} className="text-slate-400" />
+                </button>
+                <button className="w-10 h-10 rounded-lg border border-white/10 flex items-center justify-center hover:bg-white/5 transition-colors">
+                  <Download size={18} className="text-slate-400" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      {/* Scrollbar styling injected globally for a cleaner look */}
+      <style dangerouslySetInnerHTML={{__html: `
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.2);
+        }
+      `}} />
+    </div>
+  );
+};
+
+export default App;
